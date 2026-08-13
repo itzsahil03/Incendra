@@ -1,0 +1,1112 @@
+{
+  "info": {
+    "name": "IncidentOps — End to End",
+    "description": "Full request flow for the real Spring microservices stack, driven entirely through the API Gateway (http://localhost:8080). Run folders top to bottom on a fresh run — later requests depend on variables captured by earlier ones (token, incidentId, alertId). See POSTMAN_GUIDE.md in this folder for setup instructions and what each folder proves.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{token}}", "type": "string" }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Every domain endpoint expects X-Org-Id — inject it once here instead of on every request.",
+          "if (!pm.request.headers.has('X-Org-Id')) {",
+          "    pm.request.headers.add({ key: 'X-Org-Id', value: pm.collectionVariables.get('orgId') });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "eurekaUrl", "value": "http://localhost:8761", "type": "string" },
+    { "key": "orgId", "value": "demo-org", "type": "string" },
+    { "key": "webhookSecret", "value": "whsec_demo", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "profileId", "value": "", "type": "string" },
+    { "key": "incidentId", "value": "", "type": "string" },
+    { "key": "alertId", "value": "", "type": "string" },
+    { "key": "refreshToken", "value": "", "type": "string" },
+    { "key": "resetToken", "value": "", "type": "string" },
+    { "key": "serviceClientId", "value": "", "type": "string" },
+    { "key": "webhookSubId", "value": "", "type": "string" },
+    { "key": "serviceId", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "00 - Setup & Discovery",
+      "description": "Sanity checks before you start — confirms the gateway and every downstream service are actually registered.",
+      "item": [
+        {
+          "name": "Eureka Registry (all services)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": "{{eurekaUrl}}/eureka/apps"
+          },
+          "response": []
+        },
+        {
+          "name": "Gateway Health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/health"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - Auth",
+      "description": "auth-service — issues the JWT every other request in this collection uses. Register once per fresh run (Postgres persists between runs, so re-registering the same email 409s — use Login instead if the user already exists).",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.collectionVariables.set('token', json.token);",
+                  "    pm.collectionVariables.set('refreshToken', json.refreshToken);",
+                  "    pm.collectionVariables.set('userId', json.user.id);",
+                  "    pm.test('token captured', () => pm.expect(json.token).to.be.a('string'));",
+                  "} else {",
+                  "    pm.test('register failed — if this is a 409 (email taken), run Login instead', () => {});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sre@demo.io\",\n  \"password\": \"password123\",\n  \"name\": \"Ada\",\n  \"orgId\": \"{{orgId}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('token', json.token);",
+                  "pm.collectionVariables.set('refreshToken', json.refreshToken);",
+                  "pm.collectionVariables.set('userId', json.user.id);",
+                  "pm.test('token captured', () => pm.expect(json.token).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sre@demo.io\",\n  \"password\": \"password123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          },
+          "response": []
+        },
+        {
+          "name": "Client Credentials Token (service-to-service)",
+          "description": "clientId=monitoring-bot / clientSecret=cs_demo123 is a real seeded ServiceClient row (auth-service's DemoDataSeeder), not a hardcoded-prefix check — the secret is BCrypt-verified and orgId must match that client's own org (demo-org). Change either value and this now correctly 401s.",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/token?clientId=monitoring-bot&clientSecret=cs_demo123&orgId={{orgId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.collectionVariables.set('token', json.token);",
+                  "    pm.collectionVariables.set('refreshToken', json.refreshToken);",
+                  "    pm.test('token rotated', () => pm.expect(json.token).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/refresh"
+          },
+          "response": []
+        },
+        {
+          "name": "Forgot Password",
+          "description": "Always 200 whether or not the email is registered. In this demo setup no real mail transport is configured, so the reset link/token isn't retrievable through the API — check auth-service's own logs/dev mailbox and paste the token into {{resetToken}} before running Reset Password below.",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sre@demo.io\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/forgot-password"
+          },
+          "response": []
+        },
+        {
+          "name": "Reset Password",
+          "description": "Requires {{resetToken}} to be set first (see Forgot Password above) — this will 4xx with an empty/stale token, that's expected until you paste a real one.",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"newPassword\": \"newPassword123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/reset-password"
+          },
+          "response": []
+        },
+        {
+          "name": "Change Password (self-service)",
+          "description": "Self-service only — X-User-Id must be the caller's own id (the gateway trusts this header from the caller's validated JWT). Changes sre@demo.io's password back to itself so the rest of the collection keeps working; edit if you want to actually verify a real change.",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{userId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"password123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/change-password"
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "description": "Public like register/login (a caller logging out doesn't need a still-valid access token) — revokes the given refresh token.",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/logout"
+          },
+          "response": []
+        },
+        {
+          "name": "List Users (Admin)",
+          "description": "Directory listing for the caller's own org. ADMIN-only via RoleGuard — the gateway sets X-Role from the caller's own JWT, so no header needs to be set manually here as long as {{token}} belongs to an admin (sre@demo.io is org demo-org's first/only user, which auth-service makes ADMIN by default).",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/users"
+          },
+          "response": []
+        },
+        {
+          "name": "Update User Role (Admin)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"RESPONDER\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/users/{{userId}}/role"
+          },
+          "response": []
+        },
+        {
+          "name": "List Service Clients (Admin)",
+          "description": "ADMIN-only. Should include the 'monitoring-bot' row seeded by DemoDataSeeder on every auth-service boot, plus whatever you create below.",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/clients"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Service Client (Admin)",
+          "description": "Registers a new client_credentials caller (e.g. a monitoring integration) — this is the INSERT into authdb's service_clients table (client_id, a BCrypt hash of a freshly generated secret, org_id, created_at). ADMIN-only. The response's clientSecret is the plaintext secret and is only ever shown here, once — never persisted or retrievable again.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.collectionVariables.set('serviceClientId', json.clientId);",
+                  "    pm.test('service client created', () => pm.expect(json.clientSecret).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clientId\": \"postman-demo-client\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/auth/clients"
+          },
+          "response": []
+        },
+        {
+          "name": "Rotate Service Client Secret (Admin)",
+          "description": "Issues a new secret for {{serviceClientId}} (set by Create Service Client above) and invalidates the old one. ADMIN-only.",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/clients/{{serviceClientId}}/rotate"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Service Client (Admin)",
+          "description": "Deletes {{serviceClientId}}. ADMIN-only. Run last in this folder — later requests here would 404 once this runs.",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/auth/clients/{{serviceClientId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - Organizations",
+      "description": "org-service — the tenant record. 'demo-org' is seeded automatically on org-service startup, so Get My Org works immediately without creating anything first.",
+      "item": [
+        {
+          "name": "Get My Org",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/org"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Org",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.test('org created', () => pm.expect(json.id).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme Corp\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/org"
+          },
+          "response": []
+        },
+        {
+          "name": "Rotate Webhook Secret",
+          "description": "Rotates demo-org's own secret. NOTE: if you run this, the 'whsec_demo' value baked into the webhook pre-request script (04 folder) will stop matching — either don't run this against demo-org, or update the {{webhookSecret}} collection variable to the value this returns.",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/org/rotate-webhook-secret"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Org Secret (internal lookup)",
+          "description": "Normally called service-to-service by alert-ingestion-service via Feign (bypassing the gateway, no bearer token needed there). Included here so you can see it returns the same secret the webhook script signs with.",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/org/{{orgId}}/secret"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Active Webhooks (internal lookup)",
+          "description": "Normally called service-to-service by notification-service via Feign (bypassing the gateway) to learn where/how to sign outbound event deliveries — includes each webhook's signing secret, which the gateway-facing CRUD below never returns.",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/org/{{orgId}}/webhooks/active"
+          },
+          "response": []
+        },
+        {
+          "name": "List Webhook Subscriptions",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/org/webhooks"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Webhook Subscription (Admin)",
+          "description": "notification-service dispatches matching domain events here as an HMAC-signed POST to `url`, signed with the secret returned once in this response — store it, it's never shown again (same convention as Create Service Client in auth-service).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const json = pm.response.json();",
+                  "    pm.collectionVariables.set('webhookSubId', json.id);",
+                  "    pm.test('webhook created', () => pm.expect(json.secret).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://example.com/hooks/incidentops\",\n  \"subscribedTopics\": [\"IncidentCreated\", \"SeverityUpdated\"]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/org/webhooks"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Webhook Subscription (Admin)",
+          "description": "Partial update — all fields optional, only non-null ones are applied. Targets {{webhookSubId}} (set by Create above).",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subscribedTopics\": [\"IncidentCreated\", \"SeverityUpdated\", \"WorkflowTransition\"],\n  \"active\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/org/webhooks/{{webhookSubId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Webhook Subscription (Admin)",
+          "description": "Deletes {{webhookSubId}}. Run last in this folder — later requests here would 404 once this runs.",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/org/webhooks/{{webhookSubId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - Users",
+      "description": "user-service — profiles, notification preferences, on-call schedule. Separate from auth-service's UserAccount (credentials) by design — see user-service/README.md.",
+      "item": [
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/users"
+          },
+          "response": []
+        },
+        {
+          "name": "Create User Profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('profileId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ada@demo.io\",\n  \"name\": \"Ada\",\n  \"notificationPrefs\": \"{\\\"email\\\":true,\\\"slack\\\":true,\\\"sms\\\":false}\",\n  \"onCallSchedule\": \"Mon-Fri 9am-5pm\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/users"
+          },
+          "response": []
+        },
+        {
+          "name": "Get User By Id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/users/{{profileId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Update User Profile",
+          "description": "ADMIN can update anyone in the org; anyone else may only update themselves (X-User-Id must equal the path id). Partial update — only non-null fields are applied.",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{profileId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"onCallSchedule\": \"Mon-Fri 10am-6pm\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/users/{{profileId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete User Profile (Admin)",
+          "description": "ADMIN-only. Run last in this folder — later requests referencing {{profileId}} would 404 once this runs.",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/users/{{profileId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Alert Ingestion (Webhook)",
+      "description": "alert-ingestion-service — the ONLY public, unauthenticated-by-JWT entry point in the system. Guarded by an HMAC-SHA256 signature instead (see root README §6/§8). The pre-request script on each of these signs the exact raw body with {{webhookSecret}} — do not edit the body without also expecting the signature to still match (it's computed from pm.request.body.raw at send time, so editing the body is actually safe, the signature always matches whatever you send).",
+      "item": [
+        {
+          "name": "Send Alert — High CPU (P2)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const body = pm.request.body.raw;",
+                  "const hash = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-IncidentOps-Signature', value: 'sha256=' + hash });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('alertId', pm.response.json().alertId);",
+                  "    pm.test('accepted', () => pm.expect(pm.response.json().status).to.eql('accepted'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"prometheus\",\n  \"title\": \"High CPU on api-01\",\n  \"severity\": \"P2\",\n  \"description\": \"cpu>95% for 5 minutes\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/webhooks/alerts/{{orgId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Send Alert — Disk Full (P1)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const body = pm.request.body.raw;",
+                  "const hash = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-IncidentOps-Signature', value: 'sha256=' + hash });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('alertId', pm.response.json().alertId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"datadog\",\n  \"title\": \"Disk full on db-02\",\n  \"severity\": \"P1\",\n  \"description\": \"disk>98%\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/webhooks/alerts/{{orgId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Send Alert — Rich Datadog Payload (tags/infra/links/metrics)",
+          "description": "Demonstrates the Alert Detail page's normalization: tags/infrastructure/links/metrics are extracted as universal fields; query/current_value/threshold/alert_type/date_happened/org are deliberately left unmapped so they surface in Provider Context instead. monitor_id backs fingerprint-based dedup — resend this exact body with a different \"priority\" to see occurrence tracking + a PRIORITY_CHANGED history entry instead of a duplicate alert.",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const body = pm.request.body.raw;",
+                  "const hash = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-IncidentOps-Signature', value: 'sha256=' + hash });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('alertId', pm.response.json().alertId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"datadog\",\n  \"title\": \"High memory usage on checkout-service\",\n  \"description\": \"Memory utilization exceeded threshold for 10 minutes\",\n  \"priority\": \"P2\",\n  \"environment\": \"production\",\n  \"tags\": [\"service:checkout-service\", \"env:production\", \"team:payments\", \"region:us-east-1\"],\n  \"host\": \"checkout-service-01\",\n  \"cluster\": \"eks-prod\",\n  \"namespace\": \"payments\",\n  \"region\": \"us-east-1\",\n  \"url\": \"https://app.datadoghq.com/monitors/123456789\",\n  \"monitor_id\": \"mon-123456789\",\n  \"query\": \"avg(last_10m):avg:system.mem.used{service:checkout-service} > 85\",\n  \"current_value\": \"91.4\",\n  \"threshold\": \"85\",\n  \"links\": [\n    { \"label\": \"Runbook\", \"url\": \"https://runbooks.example.com/checkout-memory\" },\n    { \"label\": \"Dashboard\", \"url\": \"https://app.datadoghq.com/dashboard/abc-def\" }\n  ],\n  \"metrics\": {\n    \"name\": \"system.mem.used\", \"unit\": \"percent\", \"current\": 91.4, \"average\": 78.2, \"max\": 93.1,\n    \"series\": [\n      { \"timestamp\": \"2026-08-04T09:00:00Z\", \"value\": 72.1 },\n      { \"timestamp\": \"2026-08-04T09:05:00Z\", \"value\": 79.8 },\n      { \"timestamp\": \"2026-08-04T09:10:00Z\", \"value\": 85.6 },\n      { \"timestamp\": \"2026-08-04T09:15:00Z\", \"value\": 91.4 }\n    ]\n  },\n  \"alert_type\": \"metric alert\",\n  \"date_happened\": 1785920100,\n  \"org\": { \"id\": \"12345\", \"name\": \"Demo Org\" }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/webhooks/alerts/{{orgId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Send Alert — Same Datadog Payload, Bumped Priority (dedup demo)",
+          "description": "Same monitor_id as the rich payload above — the fingerprint matches the still-open alert from that request, so this becomes occurrence #2 on the SAME alert (same id/displayId) instead of a new one, and a PRIORITY_CHANGED history entry is appended (P2 → P1). Run the request above first.",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.collectionVariables.get('webhookSecret');",
+                  "const body = pm.request.body.raw;",
+                  "const hash = CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-IncidentOps-Signature', value: 'sha256=' + hash });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"datadog\",\n  \"title\": \"High memory usage on checkout-service\",\n  \"description\": \"Memory utilization exceeded threshold for 10 minutes\",\n  \"priority\": \"P1\",\n  \"environment\": \"production\",\n  \"monitor_id\": \"mon-123456789\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/webhooks/alerts/{{orgId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Send Alert — Invalid Signature (expect 401)",
+          "description": "Negative test: wrong signature should be rejected before the body is even parsed.",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-IncidentOps-Signature", "value": "sha256=0000000000000000000000000000000000000000000000000000000000000000" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source\": \"prometheus\",\n  \"title\": \"This should be rejected\",\n  \"severity\": \"P3\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/webhooks/alerts/{{orgId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "List Alerts",
+          "description": "Unlike the POST above (HMAC-guarded, no bearer token), these GET endpoints are real end-user requests gated by the normal JWT filter — run the Send Alert requests above first so there's something to list.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const content = json.content || [];",
+                  "if (content.length > 0) {",
+                  "    pm.collectionVariables.set('alertId', content[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/webhooks/alerts"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Alert By Id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/webhooks/alerts/{{alertId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - Incidents",
+      "description": "incident-service — consumes AlertReceived off Kafka (the two webhook sends above should already have created rows here by the time you run List) and also exposes direct REST mutation.",
+      "item": [
+        {
+          "name": "List Incidents",
+          "description": "Paginated (Spring Data Page envelope: {content, totalElements, totalPages, number, size, ...}) — default page size 50, newest first. Pass ?page=&size= to page through it; ?sort= to override the default createdAt-desc ordering.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const content = json.content || [];",
+                  "if (content.length > 0) {",
+                  "    pm.collectionVariables.set('incidentId', content[0].id);",
+                  "    pm.test('incidentId captured for later requests: ' + content[0].id, () => {});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/incidents"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Incident By Id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Incident (manual, no alert)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('incidentId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{userId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Manually opened incident\",\n  \"description\": \"Reported directly, no monitoring alert behind it\",\n  \"severity\": \"P3\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/incidents"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Severity",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"severity\": \"P1\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}/severity"
+          },
+          "response": []
+        },
+        {
+          "name": "Assign Incident",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assigneeId\": \"{{userId}}\",\n  \"assigneeName\": \"Ada\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}/assign"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Incident (title/description)",
+          "description": "Title/description only — severity/assign/status keep their own dedicated endpoints above. Same ADMIN/RESPONDER role gate as Create.",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Manually opened incident (edited)\",\n  \"description\": \"Updated description via PUT\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Incident",
+          "description": "ADMIN/RESPONDER only. Run last in this folder — later requests referencing {{incidentId}} would 404 once this runs, so keep this at the bottom of a fresh run.",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/incidents/{{incidentId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05b - Incident Service Catalog",
+      "description": "incident-service — a small catalog of services/components incidents can reference (Incident.serviceId), the 'Projects' equivalent. Reads are open to any authenticated role; mutations are ADMIN-only.",
+      "item": [
+        {
+          "name": "List Services",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/incidents/services"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Service (Admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('serviceId', pm.response.json().id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"api-01\",\n  \"description\": \"Primary API service\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/incidents/services"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Service (Admin)",
+          "description": "Partial update — only non-null fields are applied. Targets {{serviceId}} (set by Create above).",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Primary API service (updated)\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/incidents/services/{{serviceId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Service (Admin)",
+          "description": "Deletes {{serviceId}}. Run last in this folder.",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/incidents/services/{{serviceId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "06 - Workflow",
+      "description": "workflow-service — the state machine. Consumes IncidentCreated to seed each incident's initial 'Open' state, and exposes the only way to legally move it forward.",
+      "item": [
+        {
+          "name": "Get Workflow States & Transitions",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/workflow/states"
+          },
+          "response": []
+        },
+        {
+          "name": "Transition — Acknowledge",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{userId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"toState\": \"Acknowledged\",\n  \"note\": \"On it\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/workflow/incidents/{{incidentId}}/transition"
+          },
+          "response": []
+        },
+        {
+          "name": "Transition — Resolve",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{userId}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"toState\": \"Resolved\",\n  \"note\": \"Rolled back the bad deploy\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/workflow/incidents/{{incidentId}}/transition"
+          },
+          "response": []
+        },
+        {
+          "name": "Transition — Illegal jump (expect 409)",
+          "description": "Negative test: Open can't jump straight to Resolved. Only meaningful if you run this against a freshly-created incident (still in Open) rather than one you've already transitioned above.",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"toState\": \"Resolved\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/workflow/incidents/{{incidentId}}/transition"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Current State",
+          "description": "Returns just the incident's current lifecycle state (added alongside the states/transitions map above — previously there was no way to ask 'what state is this incident in right now' without inferring it from WorkflowTransition events).",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/workflow/incidents/{{incidentId}}/state"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "07 - Notifications",
+      "description": "notification-service — fans out IncidentCreated/SeverityUpdated/AssignmentChanged/WorkflowTransition to email+Slack (logged, not actually sent, in this demo). Redis-deduped for 60s per (org, incident, topic) so re-running the same webhook/transition rapidly won't double the list below.",
+      "item": [
+        {
+          "name": "List Notifications",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/notifications"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "08 - Chat",
+      "description": "chat-service — per-incident timeline, live over WebSocket, backed by Mongo. Every workflow transition also drops a system message here automatically.",
+      "item": [
+        {
+          "name": "Post Chat Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-User-Id", "value": "{{userId}}" },
+              { "key": "X-User-Name", "value": "Ada" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Looking into it now\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{baseUrl}}/api/chat/incidents/{{incidentId}}/messages"
+          },
+          "response": []
+        },
+        {
+          "name": "List Chat Messages",
+          "description": "Expect your message above PLUS a system message per workflow transition you ran in folder 06 ('State changed: Open → Acknowledged', etc).",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/chat/incidents/{{incidentId}}/messages"
+          },
+          "response": []
+        },
+        {
+          "name": "Live Incident Room (WebSocket)",
+          "description": "Postman's native WebSocket request type. The ?token= query param is required — the handshake is validated by WebSocketAuthInterceptor (a browser WebSocket client can't attach an Authorization header, so the JWT travels as a query param instead; connecting without a valid token now gets rejected with 401, where previously any connection was accepted unauthenticated). Connect, then re-run 'Post Chat Message' above in a second tab/request — the new message should arrive here in real time.",
+          "request": {
+            "method": "GET",
+            "url": "ws://localhost:8080/api/ws/incidents/{{incidentId}}?token={{token}}"
+          },
+          "protocolProfileBehavior": { "disabledSystemHeaders": {} },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "09 - Analytics",
+      "description": "analytics-service — projects every incident-related event into MTTR/severity-breakdown metrics.",
+      "item": [
+        {
+          "name": "Get Summary",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/analytics/summary"
+          },
+          "response": []
+        },
+        {
+          "name": "Live Metrics Stream (SSE)",
+          "description": "api-gateway's own MetricsStreamController — takes precedence over the declarative /api/analytics/** gateway proxy route for this exact path. Server-Sent Events: a 'metrics' event per update plus a 15s keep-alive comment heartbeat. Postman's native SSE support will show events as they arrive; this call stays open until cancelled.",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "text/event-stream" }],
+            "url": "{{baseUrl}}/api/analytics/stream"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "10 - Audit Trail",
+      "description": "auditor-service — every @Audited action from every other service lands here via Kafka. Run this LAST so there's something to see. Attribution is best-effort (see root README §6) — a couple of entries may show a blank orgId/entityId depending which service produced them; that's documented, not broken. All three requests below return a paginated Spring Data Page envelope ({content, totalElements, ...}), not a bare array — default page size 50.",
+      "item": [
+        {
+          "name": "List Audit Trail (by org)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/audit"
+          },
+          "response": []
+        },
+        {
+          "name": "List Audit Trail (filtered by incident)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/audit?entityId={{incidentId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "List Audit Trail (filtered by service)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/audit?service=workflow-service"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
