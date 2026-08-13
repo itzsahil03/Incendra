@@ -1,0 +1,473 @@
+# IncidentOps — full local dev stack
+# Run:  docker compose up
+# Gateway will be reachable at http://localhost:8080
+#
+# Every microservice is a separate process, own port, own DB.
+# Inter-service comms go through Kafka topics (see /app/services/common/EVENTS.md).
+#
+# Healthchecks ensure every "depends_on" waits for the dependency to be
+# ACTUALLY READY (not just "container started"), which avoids the
+# Zookeeper/Kafka race and Postgres-not-initialized issues seen earlier.
+
+services:
+  # ---------------- infra ----------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: "-Xms64m -Xmx128m"
+    ports: ["2181:2181"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep Mode"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    restart: on-failure
+    ports: ["9092:9092", "29092:29092"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1536M
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx384m"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+    ports: ["8081:8081"]
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/subjects || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: incidentops
+      POSTGRES_PASSWORD: incidentops
+      POSTGRES_MULTIPLE_DATABASES: authdb,orgdb,userdb,incidentdb,workflowdb
+    ports: ["5432:5432"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    volumes:
+      - ./infra/postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          pg_isready -U incidentops -d authdb &&
+          pg_isready -U incidentops -d orgdb &&
+          pg_isready -U incidentops -d userdb &&
+          pg_isready -U incidentops -d incidentdb &&
+          pg_isready -U incidentops -d workflowdb
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Dev-only SMTP catcher for auth-service's forgot-password emails — nothing is ever
+  # really delivered, view sent mail at http://localhost:8025.
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports: ["1025:1025", "8025:8025"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 64M
+
+  # ---------------- platform services ----------------
+  discovery-server:
+    image: discovery-server:latest
+    ports: ["8761:8761"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xms64m -Xmx256m -XX:+UseSerialGC
+      - BPL_JVM_THREAD_COUNT=10
+
+  config-server:
+    image: config-server:latest
+    depends_on: [discovery-server]
+    restart: on-failure
+    ports: ["8888:8888"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8888' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  api-gateway:
+    image: api-gateway:latest
+    depends_on: [discovery-server, redis, auth-service, kafka]
+    restart: on-failure
+    ports: ["8080:8080"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      REDIS_HOST: redis
+      # Consumes MetricsGenerated to relay it over the GET /api/analytics/stream SSE
+      # endpoint (see MetricsStreamService) — the gateway had no Kafka involvement at
+      # all before this endpoint existed.
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+      # Browser origin(s) allowed to call the gateway cross-origin — the frontend's Vite
+      # dev server and production-preview ports, matching application-dev.yml's default.
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:4173
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  # ---------------- domain services ----------------
+  auth-service:
+    image: auth-service:latest
+    depends_on: [postgres, discovery-server, kafka, mailhog]
+    restart: on-failure
+    ports: ["8091:8091"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/authdb
+      SPRING_DATASOURCE_USERNAME: incidentops
+      SPRING_DATASOURCE_PASSWORD: incidentops
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+      # forgot-password emails land in MailHog's dev catcher (web UI at :8025), never a
+      # real inbox — see PasswordResetMailer.
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      MAIL_FROM: noreply@incendra.local
+      APP_BASE_URL: http://localhost:5173
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8091' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  org-service:
+    image: org-service:latest
+    depends_on: [postgres, discovery-server, kafka]
+    restart: on-failure
+    ports: ["8092:8092"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orgdb
+      SPRING_DATASOURCE_USERNAME: incidentops
+      SPRING_DATASOURCE_PASSWORD: incidentops
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8092' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  user-service:
+    image: user-service:latest
+    depends_on: [postgres, discovery-server, kafka]
+    restart: on-failure
+    ports: ["8093:8093"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/userdb
+      SPRING_DATASOURCE_USERNAME: incidentops
+      SPRING_DATASOURCE_PASSWORD: incidentops
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8093' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  alert-ingestion-service:
+    image: alert-ingestion-service:latest
+    depends_on: [kafka, mongo, discovery-server]
+    restart: on-failure
+    ports: ["8094:8094"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/alertdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      # JwtFilter now guards the read-only GET /api/webhooks/alerts* endpoints added
+      # alongside HMAC-only ingestion (see SecurityConfig/JwtFilter) — POST ingestion
+      # itself is unaffected, that stays HMAC-verified only.
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8094' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  incident-service:
+    image: incident-service:latest
+    depends_on: [kafka, postgres, discovery-server]
+    restart: on-failure
+    ports: ["8095:8095"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/incidentdb
+      SPRING_DATASOURCE_USERNAME: incidentops
+      SPRING_DATASOURCE_PASSWORD: incidentops
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8095' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  workflow-service:
+    image: workflow-service:latest
+    depends_on: [kafka, postgres, discovery-server]
+    restart: on-failure
+    ports: ["8096:8096"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/workflowdb
+      SPRING_DATASOURCE_USERNAME: incidentops
+      SPRING_DATASOURCE_PASSWORD: incidentops
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8096' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  notification-service:
+    image: notification-service:latest
+    depends_on: [kafka, redis, mongo, discovery-server]
+    restart: on-failure
+    ports: ["8097:8097"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_REDIS_HOST: redis
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/notificationdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8097' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  chat-service:
+    image: chat-service:latest
+    depends_on: [kafka, mongo, redis, discovery-server]
+    restart: on-failure
+    ports: ["8098:8098"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/chatdb
+      SPRING_REDIS_HOST: redis
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8098' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  analytics-service:
+    image: analytics-service:latest
+    depends_on: [kafka, mongo, discovery-server]
+    restart: on-failure
+    ports: ["8099:8099"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/analyticsdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8099' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  auditor-service:
+    image: auditor-service:latest
+    depends_on: [kafka, mongo, discovery-server]
+    restart: on-failure
+    ports: ["8100:8100"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m -XX:+UseSerialGC"
+      BPL_JVM_THREAD_COUNT: "25"
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/auditdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      EUREKA_SERVER: http://discovery-server:8761/eureka
+      JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8100' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
