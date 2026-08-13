@@ -1,0 +1,3 @@
+# AWS: DocumentDB/ElastiCache/MSK endpoints come from ECS task definition env vars — no localhost fallbacks.
+logging.level.io.incidentops: INFO
+management.endpoint.health.show-details: never

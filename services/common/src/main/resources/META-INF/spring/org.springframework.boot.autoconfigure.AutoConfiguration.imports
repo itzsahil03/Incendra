@@ -1,0 +1,3 @@
+io.incidentops.common.config.CommonAutoConfiguration
+io.incidentops.common.config.AuditAutoConfiguration
+io.incidentops.common.config.KafkaErrorHandlingAutoConfiguration

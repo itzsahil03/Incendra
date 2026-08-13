@@ -1,0 +1,18 @@
+# services/discovery-server/src/main/resources/application.yml
+server:
+  port: 8761
+spring:
+  application:
+    name: discovery-server
+eureka:
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+  instance:
+    hostname: localhost
+    prefer-ip-address: false # Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s

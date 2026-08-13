@@ -1,0 +1,27 @@
+server.port: 8100
+spring:
+  application.name: auditor-service
+  data.mongodb.uri: ${SPRING_DATA_MONGODB_URI:mongodb://mongo:27017/auditdb}
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+    consumer:
+      group-id: auditor-service
+      # This is the sole writer of the audit trail — a gap here is a silently incomplete
+      # audit log, not just a stale cache. See analytics-service's application.yml for
+      # why the platform-wide default ("latest") is wrong for this class of consumer.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties.spring.json.trusted.packages: "*"
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+eureka.client.serviceUrl.defaultZone: ${EUREKA_SERVER:http://discovery-server:8761/eureka}
+eureka.instance.prefer-ip-address: true
+auditor.retention-days: ${AUDIT_RETENTION_DAYS:90}
+auditor.retention-cron: ${AUDITOR_RETENTION_CRON:0 0 3 * * *}
+# Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s

@@ -1,0 +1,3 @@
+# AWS: values come from ECS task definition env vars (DocumentDB, MSK) — no localhost fallbacks.
+logging.level.io.incidentops: INFO
+management.endpoint.health.show-details: never

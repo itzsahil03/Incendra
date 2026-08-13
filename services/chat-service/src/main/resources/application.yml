@@ -1,0 +1,30 @@
+server.port: 8098
+spring:
+    application.name: chat-service
+    data.mongodb.uri: ${SPRING_DATA_MONGODB_URI:mongodb://mongo:27017/chatdb}
+    data.redis.host: ${SPRING_REDIS_HOST:redis}
+    data.redis.port: 6379
+    kafka:
+        bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+        consumer:
+            group-id: chat-service
+            # Posts a system message into an incident's chat on every workflow transition
+            # — a gap here just means a missing system message, not incorrect state, but
+            # there's no reason for this to be less complete than the rest. See
+            # analytics-service's application.yml for why the platform-wide default
+            # ("latest") is wrong for this class of consumer.
+            auto-offset-reset: earliest
+            key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+            value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+            properties.spring.json.trusted.packages: "*"
+        producer:
+            key-serializer: org.apache.kafka.common.serialization.StringSerializer
+            value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+            acks: all
+eureka.client.serviceUrl.defaultZone: ${EUREKA_SERVER:http://discovery-server:8761/eureka}
+eureka.instance.prefer-ip-address: true
+springdoc.api-docs.path: /v3/api-docs
+# Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s
