@@ -1,0 +1,13 @@
+# Local, non-docker development — services resolved on localhost instead of the compose network.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/userdb
+    username: postgres
+    password: postgres
+  kafka.bootstrap-servers: localhost:29092
+eureka.client.serviceUrl.defaultZone: http://localhost:8761/eureka
+logging.level.io.incidentops: DEBUG
+
+# Fixed demo secret for local/dev only — production requires JWT_SECRET to be supplied
+# externally (env var / secret manager) and fails fast at startup if it is not (see SecurityConfig).
+JWT_SECRET: GIEEsDn4DnEZdSKtFPJ3fZoVqGgD2z7Vl9LZk/b4So0=

@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.incidentops</groupId>
+  <artifactId>incidentops-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <name>IncidentOps :: Parent</name>
+
+  <properties>
+    <java.version>21</java.version>
+    <spring.boot.version>3.4.12</spring.boot.version>
+    <spring.cloud.version>2024.0.0</spring.cloud.version>
+    <springdoc.version>2.7.0</springdoc.version>
+    <testcontainers.version>1.20.4</testcontainers.version>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+  </properties>
+
+  <modules>
+    <module>common</module>
+    <module>alert-ingestion-service</module>
+    <module>analytics-service</module>
+    <module>api-gateway</module>
+    <module>auditor-service</module>
+    <module>auth-service</module>
+    <module>chat-service</module>
+    <module>config-server</module>
+    <module>discovery-server</module>
+    <module>incident-service</module>
+    <module>org-service</module>
+    <module>user-service</module>
+    <module>workflow-service</module>
+    <module>notification-service</module>
+  </modules>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-dependencies</artifactId>
+        <version>${spring.cloud.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springdoc</groupId>
+        <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        <version>${springdoc.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.springdoc</groupId>
+        <artifactId>springdoc-openapi-starter-webflux-ui</artifactId>
+        <version>${springdoc.version}</version>
+      </dependency>
+      <!-- Real-infra integration tests (auth-service/org-service/user-service's Testcontainers
+           suites) — imported here so every module resolves the same, compatible set of
+           Postgres/Kafka/Redis testcontainers versions without pinning them individually. -->
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+          <version>${spring.boot.version}</version>
+          <configuration>
+            <image>
+              <name>${project.artifactId}:latest</name>
+              <env>
+                <BP_JVM_VERSION>21</BP_JVM_VERSION>
+              </env>
+            </image>
+          </configuration>
+          <executions>
+            <!-- Without this, `mvn package` only produces the plain (non-executable) jar —
+                 this parent doesn't inherit from spring-boot-starter-parent, which is what
+                 normally binds `repackage` to the package phase implicitly. -->
+            <execution>
+              <goals>
+                <goal>repackage</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.14.0</version>
+          <configuration>
+            <!-- retains parameter names (e.g. orgId, userId) so the common AuditAspect
+                 can attribute audit events without per-call-site boilerplate. -->
+            <parameters>true</parameters>
+            <annotationProcessorPaths>
+              <path>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>1.18.38</version>
+              </path>
+            </annotationProcessorPaths>
+          </configuration>
+        </plugin>
+        <plugin>
+          <!-- Explicit version so JUnit 5 (JUnit Platform) tests are actually picked up and
+               run — this project doesn't inherit spring-boot-starter-parent, which is what
+               would otherwise manage this version for us, so `mvn test` silently ran zero
+               tests under the ancient default Surefire version Maven's own super POM provides. -->
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>0.8.12</version>
+          <configuration>
+            <!-- SpringApplication.run(...) bootstrap classes need a fully running context
+                 (real DB/Kafka/Redis) to execute meaningfully — out of scope for unit tests,
+                 same reasoning that scoped Testcontainers integration tests out this pass.
+                 Everything else (controllers, config bean methods, filters, mappers,
+                 publishers/consumers) is realistically unit-testable and stays in scope. -->
+            <excludes>
+              <exclude>**/*Application.class</exclude>
+            </excludes>
+          </configuration>
+          <executions>
+            <execution>
+              <id>jacoco-prepare-agent</id>
+              <goals>
+                <goal>prepare-agent</goal>
+              </goals>
+            </execution>
+            <execution>
+              <id>jacoco-report</id>
+              <phase>test</phase>
+              <goals>
+                <goal>report</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>

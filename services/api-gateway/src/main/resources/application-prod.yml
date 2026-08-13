@@ -1,0 +1,6 @@
+# AWS: ElastiCache endpoint comes from the ECS task definition env var — no localhost fallback.
+logging.level.io.incidentops: INFO
+management.endpoint.health.show-details: never
+# CORS_ALLOWED_ORIGINS has no default (see application.yml) and must be supplied by the
+# ECS task definition — a comma-separated list of the real frontend origin(s), e.g.
+# https://app.example.com. Same fail-fast convention as JWT_SECRET.
