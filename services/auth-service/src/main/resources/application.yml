@@ -1,0 +1,41 @@
+server.port: 8091
+spring:
+  application.name: auth-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/authdb}
+    username: ${SPRING_DATASOURCE_USERNAME:incidentops}
+    password: ${SPRING_DATASOURCE_PASSWORD:incidentops}
+  jpa:
+    hibernate.ddl-auto: validate
+    open-in-view: false
+  data.redis.host: ${SPRING_REDIS_HOST:redis}
+  data.redis.port: 6379
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+  mail:
+    host: ${SMTP_HOST:mailhog}
+    port: ${SMTP_PORT:1025}
+    properties:
+      mail.smtp.auth: false
+      mail.smtp.starttls.enable: false
+      # MailHog is a dev-only catcher with no real mailbox behind it — a slow/unreachable
+      # connection here would otherwise hang forgot-password requests indefinitely.
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 5000
+incidentops:
+  mail.from: ${MAIL_FROM:noreply@incendra.local}
+  app.base-url: ${APP_BASE_URL:http://localhost:5173}
+eureka.client.serviceUrl.defaultZone: ${EUREKA_SERVER:http://discovery-server:8761/eureka}
+eureka.instance.prefer-ip-address: true
+springdoc.api-docs.path: /v3/api-docs
+# Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s

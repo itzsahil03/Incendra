@@ -1,0 +1,78 @@
+server.port: 8080
+spring:
+    application.name: api-gateway
+    data.redis.host: ${REDIS_HOST:redis}
+    data.redis.port: 6379
+    kafka:
+        bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+        consumer:
+            group-id: api-gateway
+            key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+            value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+            properties.spring.json.trusted.packages: "*"
+    cloud:
+        gateway:
+            globalcors:
+                corsConfigurations:
+                    '[/**]':
+                        # No default here, same fail-fast convention as JWT_SECRET below —
+                        # a wildcard origin alongside Bearer-token auth is an easy mistake to
+                        # ship by accident, so every environment must say explicitly which
+                        # origins it trusts (dev's default lives in application-dev.yml).
+                        allowedOrigins: "${CORS_ALLOWED_ORIGINS}"
+                        allowedMethods: "*"
+                        allowedHeaders: "*"
+            routes:
+                -   id: auth
+                    uri: lb://auth-service
+                    predicates: [Path=/api/auth/**]
+                    filters:
+                        -   name: RequestRateLimiter
+                            args:
+                                redis-rate-limiter.replenishRate: 20
+                                redis-rate-limiter.burstCapacity: 40
+                                key-resolver: "#{@orgKeyResolver}"
+                -   id: org
+                    uri: lb://org-service
+                    predicates: [Path=/api/org/**]
+                -   id: user
+                    uri: lb://user-service
+                    predicates: [Path=/api/users/**]
+                -   id: alert
+                    uri: lb://alert-ingestion-service
+                    predicates: [Path=/api/webhooks/**]
+                    filters:
+                        -   name: RequestRateLimiter
+                            args:
+                                redis-rate-limiter.replenishRate: 100
+                                redis-rate-limiter.burstCapacity: 200
+                                key-resolver: "#{@orgKeyResolver}"
+                -   id: incident
+                    uri: lb://incident-service
+                    predicates: [Path=/api/incidents/**]
+                -   id: workflow
+                    uri: lb://workflow-service
+                    predicates: [Path=/api/workflow/**]
+                -   id: notification
+                    uri: lb://notification-service
+                    predicates: [Path=/api/notifications/**]
+                -   id: chat
+                    uri: lb://chat-service
+                    # a single Path predicate with comma-separated patterns is OR logic (match
+                    # either); two separate `Path=` entries in this list is AND logic instead —
+                    # that combination is unsatisfiable by any single request and 404s everything
+                    # under both prefixes. See root README VERIFY.md Phase 4 for how this was caught.
+                    predicates: ["Path=/api/chat/**,/api/ws/**"]
+                -   id: analytics
+                    uri: lb://analytics-service
+                    predicates: [Path=/api/analytics/**]
+                -   id: audit
+                    uri: lb://auditor-service
+                    predicates: [Path=/api/audit/**]
+
+eureka.client.serviceUrl.defaultZone: ${EUREKA_SERVER:http://discovery-server:8761/eureka}
+eureka.instance.prefer-ip-address: true
+# Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s

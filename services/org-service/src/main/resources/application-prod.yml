@@ -1,0 +1,4 @@
+# AWS: RDS/MSK endpoints come from ECS task definition env vars — no localhost fallbacks.
+spring.jpa.hibernate.ddl-auto: validate
+logging.level.io.incidentops: INFO
+management.endpoint.health.show-details: never
