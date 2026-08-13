@@ -1,0 +1,33 @@
+server.port: 8099
+spring:
+    application.name: analytics-service
+    data.mongodb.uri: ${SPRING_DATA_MONGODB_URI:mongodb://mongo:27017/analyticsdb}
+    kafka:
+        bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+        consumer:
+            group-id: analytics-service
+            # No committed offset (this group's first-ever connection, or a rebuilt
+            # projection) must replay the whole event history, not silently pick up only
+            # events published from that moment on — the platform-wide default ("latest")
+            # is wrong for every one of these idempotent-by-eventId projection consumers.
+            auto-offset-reset: earliest
+            key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+            value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+            properties.spring.json.trusted.packages: "*"
+        producer:
+            key-serializer: org.apache.kafka.common.serialization.StringSerializer
+            value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+            acks: all
+eureka.client.serviceUrl.defaultZone: ${EUREKA_SERVER:http://discovery-server:8761/eureka}
+eureka.instance.prefer-ip-address: true
+springdoc.api-docs.path: /v3/api-docs
+# TerminalStateResolver already falls back to a cached/default terminal-state set on any
+# failure — a short timeout here just makes sure a workflow-service outage is detected
+# (and falls back) quickly instead of blocking the metrics-summary request for the
+# Feign client's 10s default.
+feign.client.config.default.connect-timeout: 2000
+feign.client.config.default.read-timeout: 3000
+# Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s

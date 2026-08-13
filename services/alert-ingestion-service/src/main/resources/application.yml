@@ -1,0 +1,32 @@
+server.port: 8094
+spring:
+  application.name: alert-ingestion-service
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
+    consumer:
+      group-id: alert-ingestion-service
+      # First-ever consumer in this service (previously producer-only) — added for
+      # OrgDeleted cleanup, same settings as incident-service's consumer block.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties.spring.json.trusted.packages: "*"
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://mongo:27017/alertdb}
+eureka.client.serviceUrl.defaultZone: ${EUREKA_SERVER:http://discovery-server:8761/eureka}
+eureka.instance.prefer-ip-address: true
+# Without an explicit timeout, a Feign client's default connect/read timeout (10s in
+# spring-cloud-openfeign) means one unreachable org-service instance can hold up every
+# webhook ingestion request for that long before failing — fail faster instead so a
+# dependency outage degrades quickly rather than piling up slow requests here.
+feign.client.config.default.connect-timeout: 2000
+feign.client.config.default.read-timeout: 3000
+# Let an in-flight request finish before the JVM exits on SIGTERM (docker stop /
+# rolling restarts), instead of the socket being torn down mid-response.
+server.shutdown: graceful
+spring.lifecycle.timeout-per-shutdown-phase: 20s

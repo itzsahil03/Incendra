@@ -1,0 +1,2 @@
+logging.level.io.incidentops: INFO
+management.endpoint.health.show-details: never

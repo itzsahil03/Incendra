@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS services;
+ALTER TABLE incidents DROP COLUMN IF EXISTS service_id;
+ALTER TABLE incidents DROP COLUMN IF EXISTS service_name;
